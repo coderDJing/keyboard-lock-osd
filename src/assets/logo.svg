@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="Keyboard Lock OSD logo">
+  <rect x="128" y="128" width="768" height="768" rx="176" fill="#20242b"/>
+  <circle cx="362" cy="512" r="70" fill="#1f9d63"/>
+  <circle cx="512" cy="512" r="70" fill="#f8fafc" opacity=".42"/>
+  <circle cx="662" cy="512" r="70" fill="#f8fafc" opacity=".42"/>
+</svg>

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the settings and OSD windows",
+  "windows": ["settings", "osd"],
+  "permissions": [
+    "core:default",
+    "opener:default"
+  ]
+}
