@@ -1,6 +1,6 @@
 [package]
 name = "keyboard-lock-osd"
-version = "0.1.0"
+version = "0.1.1"
 description = "A lightweight Windows OSD for lock-key state changes"
 authors = ["coderDJing"]
 edition = "2021"

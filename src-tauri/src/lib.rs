@@ -524,7 +524,7 @@ fn show_startup_tray_toast(app: &AppHandle) {
 
     let _ = position_osd_window(&window);
     let _ = app.emit_to("osd", "startup-tray-toast", &payload);
-    let _ = window.show();
+    reveal_osd_window(&window);
 }
 
 fn startup_tray_toast_payload(language: UiLanguage) -> StartupToastPayload {
@@ -679,6 +679,12 @@ fn show_osd(app: &AppHandle, key: LockKey, enabled: bool) {
     let _ = position_osd_window(&window);
     let _ = app.emit_to("osd", "lock-key-change", &payload);
 
+    reveal_osd_window(&window);
+}
+
+fn reveal_osd_window(window: &tauri::WebviewWindow) {
+    let _ = window.unminimize();
+    let _ = window.set_always_on_top(true);
     let _ = window.show();
 }
 
@@ -838,6 +844,10 @@ fn is_foreground_window_fullscreen() -> bool {
             return false;
         }
 
+        if is_shell_desktop_window(hwnd) {
+            return false;
+        }
+
         let mut window_rect: RECT = zeroed();
         if GetWindowRect(hwnd, &mut window_rect) == 0 {
             return false;
@@ -865,6 +875,25 @@ fn is_foreground_window_fullscreen() -> bool {
 #[cfg(not(target_os = "windows"))]
 fn is_foreground_window_fullscreen() -> bool {
     false
+}
+
+#[cfg(target_os = "windows")]
+fn is_shell_desktop_window(hwnd: windows_sys::Win32::Foundation::HWND) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+
+    let mut class_name = [0u16; 256];
+    let len = unsafe { GetClassNameW(hwnd, class_name.as_mut_ptr(), class_name.len() as i32) };
+    if len <= 0 {
+        return false;
+    }
+
+    let class_name = String::from_utf16_lossy(&class_name[..len as usize]);
+    is_shell_desktop_class(&class_name)
+}
+
+#[cfg(target_os = "windows")]
+fn is_shell_desktop_class(class_name: &str) -> bool {
+    matches!(class_name, "Progman" | "WorkerW")
 }
 
 #[cfg(target_os = "windows")]
@@ -1166,5 +1195,22 @@ fn lock_key_from_vk(vk_code: u32) -> Option<LockKey> {
         VK_NUMLOCK => Some(LockKey::Num),
         VK_SCROLL => Some(LockKey::Scroll),
         _ => None,
+    }
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::is_shell_desktop_class;
+
+    #[test]
+    fn identifies_windows_desktop_shell_classes() {
+        assert!(is_shell_desktop_class("Progman"));
+        assert!(is_shell_desktop_class("WorkerW"));
+    }
+
+    #[test]
+    fn keeps_regular_fullscreen_windows_suppressible() {
+        assert!(!is_shell_desktop_class("ApplicationFrameWindow"));
+        assert!(!is_shell_desktop_class("Chrome_WidgetWin_1"));
     }
 }
