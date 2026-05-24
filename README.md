@@ -10,9 +10,9 @@ Keyboard Lock OSD is a lightweight Windows utility that shows a compact on-scree
 
 ## Screenshots
 
-### OSD Overlay
+### Caps Lock OSD Overlay
 
-![Keyboard Lock OSD overlay screenshot](./docs/images/en/overlay.png)
+![Keyboard Lock OSD Caps Lock overlay screenshot](./docs/images/en/overlay.png)
 
 ### Settings Window
 
