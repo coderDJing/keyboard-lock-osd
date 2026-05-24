@@ -1,58 +1,53 @@
 # Keyboard Lock OSD
 
-Keyboard Lock OSD is a lightweight Windows app for Caps Lock, Num Lock, and Scroll Lock state changes.
+[English](./README.en.md)
 
-## Current Scope
+Keyboard Lock OSD 是一个面向 Windows 的轻量锁定键提示工具。它会在你按下 Caps Lock、Num Lock 或 Scroll Lock 时，在屏幕中下方显示一个短暂浮层，让当前状态一眼可见。
 
-- Event-driven Windows keyboard hook for immediate lock-key feedback.
-- Minimal bottom-center OSD using short English labels: `CAP`, `NUM`, `SCRL`.
-- Bilingual settings window structure for English and Chinese.
-- Optional fullscreen suppression for the OSD, enabled by default.
-- Silent tray-first startup; settings opens from the tray menu or tray icon.
-- Signed auto-updates through GitHub Releases.
-- Tauri 2 + Rust + React + Vite.
+## 截图
 
-## Development
+### 锁定键浮层
+
+![Keyboard Lock OSD 浮层截图](./docs/images/overlay.png)
+
+### 设置界面
+
+![Keyboard Lock OSD 设置界面截图](./docs/images/settings.png)
+
+## 主要功能
+
+- 即时显示 Caps Lock、Num Lock、Scroll Lock 的开关状态。
+- 使用简洁的屏幕浮层提示，不打断当前输入和工作流。
+- 支持为每个锁定键单独开启或关闭浮层提示。
+- 设置界面可查看当前锁定键状态，并可直接预览浮层效果。
+- 默认开机自启，启动后常驻系统托盘。
+- 可设置全屏时隐藏浮层，避免打扰游戏、演示和视频播放。
+- 支持中英文界面，会根据系统语言自动选择。
+- 发布版通过 GitHub Releases 使用签名自动更新。
+
+## 使用方式
+
+1. 启动应用后，它会最小化到系统托盘。
+2. 按下 Caps Lock、Num Lock 或 Scroll Lock，屏幕中下方会出现状态浮层。
+3. 点击托盘图标打开设置界面。
+4. 在设置界面里调整开机自启、全屏隐藏，以及每个锁定键是否显示浮层。
+
+## 适合谁
+
+- 键盘没有锁定键指示灯的笔记本用户。
+- 外接键盘指示灯不明显、容易误触 Caps Lock 的用户。
+- 希望在不打断输入的情况下确认锁定键状态的 Windows 用户。
+
+## 开发
 
 ```powershell
 pnpm install
 pnpm tauri dev
 ```
 
-## Release And Auto Update
-
-The app uses Tauri's signed updater. Release builds check GitHub Releases on startup and install a newer signed Windows installer when one is available.
-
-Updater endpoint:
-
-```text
-https://github.com/coderDJing/keyboard-lock-osd/releases/latest/download/latest.json
-```
-
-The updater public key is stored in `src-tauri/tauri.conf.json`. The matching private key was generated locally at:
-
-```text
-C:\Users\coder\.tauri\keyboard-lock-osd.key
-```
-
-Configure these GitHub repository secrets before publishing a release:
-
-```text
-TAURI_SIGNING_PRIVATE_KEY
-TAURI_SIGNING_PRIVATE_KEY_PASSWORD
-```
-
-`TAURI_SIGNING_PRIVATE_KEY` must contain the private key file content. The current key was generated without a password, so `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` can be left empty or omitted unless a password-protected key replaces it.
-
-To publish an update, bump the version in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`, then push a version tag:
+## 验证
 
 ```powershell
-git tag v0.1.1
-git push origin v0.1.1
+pnpm run build
+cargo check --manifest-path src-tauri/Cargo.toml
 ```
-
-The `Release` GitHub Actions workflow builds the Windows Tauri installer, uploads signed updater artifacts, and publishes `latest.json` to the GitHub Release. Keep the release published, not draft, because the app reads from GitHub's `latest` release endpoint.
-
-## Notes
-
-The first implementation targets Windows. The app reads the initial lock-key state on startup, then reacts to global keyboard events instead of polling in a timer.
