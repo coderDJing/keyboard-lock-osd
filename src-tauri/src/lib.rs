@@ -328,6 +328,10 @@ fn set_suppress_fullscreen_osd(enabled: bool) {
 
 #[tauri::command]
 fn current_autostart_enabled(app: AppHandle) -> bool {
+    if cfg!(debug_assertions) {
+        return read_autostart_preference().unwrap_or(true);
+    }
+
     app.autolaunch()
         .is_enabled()
         .unwrap_or_else(|_| read_autostart_preference().unwrap_or(true))
@@ -739,6 +743,10 @@ fn initialize_autostart(app: &AppHandle) {
 }
 
 fn apply_autostart_preference(app: &AppHandle, enabled: bool) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
+
     let manager = app.autolaunch();
     if enabled {
         manager.enable()
