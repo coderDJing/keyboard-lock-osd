@@ -205,6 +205,7 @@ function SettingsView() {
   const [language, setLanguage] = useState<Language>(() => detectBrowserLanguage());
   const [states, setStates] = useState<LockChangePayload[]>(fallbackStates);
   const [autostartEnabled, setAutostartEnabled] = useState<boolean | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
   const [suppressFullscreenOsd, setSuppressFullscreenOsd] = useState<boolean>(() =>
     readStoredBoolean(suppressFullscreenStorageKey, true),
   );
@@ -246,6 +247,12 @@ function SettingsView() {
           setLanguage(value);
         }
       })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    invoke<string>("current_version")
+      .then(setAppVersion)
       .catch(() => {});
   }, []);
 
@@ -297,6 +304,7 @@ function SettingsView() {
             <p>{text.subtitle}</p>
           </div>
         </div>
+        {appVersion && <span className="version-badge">v{appVersion}</span>}
       </header>
 
       <section className="settings-options">

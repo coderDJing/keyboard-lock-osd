@@ -244,6 +244,24 @@ button {
   margin: 0;
 }
 
+.version-badge {
+  align-items: center;
+  background: rgba(32, 36, 43, 0.08);
+  border: 1px solid rgba(32, 36, 43, 0.08);
+  border-radius: 999px;
+  color: #596472;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 800;
+  height: 24px;
+  justify-content: center;
+  line-height: 1;
+  min-width: 54px;
+  padding: 0 9px;
+  white-space: nowrap;
+}
+
 .settings-options {
   display: grid;
   gap: 6px;
@@ -445,6 +463,10 @@ button {
   .settings-header {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .version-badge {
+    align-self: flex-start;
   }
 
   .settings-options {

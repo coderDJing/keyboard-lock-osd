@@ -352,6 +352,11 @@ fn current_language() -> String {
 }
 
 #[tauri::command]
+fn current_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
+#[tauri::command]
 fn current_launch_source(context: State<'_, LaunchContext>) -> LaunchSourcePayload {
     context.source.payload()
 }
@@ -444,6 +449,7 @@ pub fn run() {
             current_autostart_enabled,
             set_autostart_enabled,
             current_language,
+            current_version,
             current_launch_source,
             osd_ready
         ])
