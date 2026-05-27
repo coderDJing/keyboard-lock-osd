@@ -1960,7 +1960,7 @@ dependencies = [
 
 [[package]]
 name = "keyboard-lock-osd"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "serde",
  "serde_json",

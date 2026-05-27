@@ -48,7 +48,6 @@ button {
   background: rgba(24, 27, 32, 0.58);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 18px;
-  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
   color: #f8fafc;
   display: flex;
   gap: 18px;
