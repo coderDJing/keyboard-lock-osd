@@ -32,6 +32,8 @@ const PROJECT_REPOSITORY_URL: &str = "https://github.com/coderDJing/keyboard-loc
 
 static KEY_EVENT_SENDER: OnceLock<Sender<KeyEvent>> = OnceLock::new();
 static OSD_PREFERENCES: OnceLock<Mutex<OsdPreferences>> = OnceLock::new();
+static OSD_READY: OnceLock<Mutex<bool>> = OnceLock::new();
+static PENDING_OSD_NOTICE: OnceLock<Mutex<Option<LockChangePayload>>> = OnceLock::new();
 #[cfg(all(windows, debug_assertions))]
 static CONSOLE_APP_HANDLE: OnceLock<AppHandle> = OnceLock::new();
 
@@ -360,6 +362,12 @@ fn osd_ready(
     context: State<'_, LaunchContext>,
     toast_state: State<'_, StartupTrayToastState>,
 ) {
+    mark_osd_ready();
+
+    if flush_pending_osd_notice(&app) {
+        return;
+    }
+
     if !matches!(context.source, LaunchSource::Manual)
         || !mark_startup_tray_toast_shown(&toast_state)
     {
@@ -681,9 +689,61 @@ fn show_osd(app: &AppHandle, key: LockKey, enabled: bool) {
 
     let payload = LockChangePayload::new(key, enabled);
     let _ = position_osd_window(&window);
+
+    if !is_osd_ready() {
+        store_pending_osd_notice(payload);
+        return;
+    }
+
     let _ = app.emit_to("osd", "lock-key-change", &payload);
 
     reveal_osd_window(&window);
+}
+
+fn mark_osd_ready() {
+    if let Ok(mut ready) = OSD_READY.get_or_init(|| Mutex::new(false)).lock() {
+        *ready = true;
+    }
+}
+
+fn is_osd_ready() -> bool {
+    OSD_READY
+        .get_or_init(|| Mutex::new(false))
+        .lock()
+        .map(|ready| *ready)
+        .unwrap_or(false)
+}
+
+fn store_pending_osd_notice(payload: LockChangePayload) {
+    if let Ok(mut pending) = PENDING_OSD_NOTICE.get_or_init(|| Mutex::new(None)).lock() {
+        *pending = Some(payload);
+    }
+}
+
+fn flush_pending_osd_notice(app: &AppHandle) -> bool {
+    let payload = PENDING_OSD_NOTICE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut pending| pending.take());
+
+    let Some(payload) = payload else {
+        return false;
+    };
+
+    let Some(window) = app.get_webview_window("osd") else {
+        return true;
+    };
+
+    if read_suppress_fullscreen_osd() && is_foreground_window_fullscreen() {
+        let _ = window.hide();
+        return true;
+    }
+
+    let _ = position_osd_window(&window);
+    let _ = app.emit_to("osd", "lock-key-change", &payload);
+    reveal_osd_window(&window);
+    true
 }
 
 fn reveal_osd_window(window: &tauri::WebviewWindow) {
@@ -839,11 +899,10 @@ fn position_osd_window(window: &tauri::WebviewWindow) -> tauri::Result<()> {
 fn is_foreground_window_fullscreen() -> bool {
     use std::mem::{size_of, zeroed};
     use windows_sys::Win32::{
-        Foundation::RECT,
         Graphics::Gdi::{
             GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
         },
-        UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect, IsIconic},
+        UI::WindowsAndMessaging::{GetForegroundWindow, IsIconic},
     };
 
     unsafe {
@@ -856,10 +915,9 @@ fn is_foreground_window_fullscreen() -> bool {
             return false;
         }
 
-        let mut window_rect: RECT = zeroed();
-        if GetWindowRect(hwnd, &mut window_rect) == 0 {
+        let Some(window_rect) = visible_window_rect(hwnd) else {
             return false;
-        }
+        };
 
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         if monitor.is_null() {
@@ -877,6 +935,40 @@ fn is_foreground_window_fullscreen() -> bool {
         }
 
         rect_covers_monitor(window_rect, monitor_info.rcMonitor)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn visible_window_rect(
+    hwnd: windows_sys::Win32::Foundation::HWND,
+) -> Option<windows_sys::Win32::Foundation::RECT> {
+    use std::{
+        ffi::c_void,
+        mem::{size_of, zeroed},
+    };
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS},
+        UI::WindowsAndMessaging::GetWindowRect,
+    };
+
+    unsafe {
+        let mut rect: RECT = zeroed();
+        let result = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS as u32,
+            &mut rect as *mut RECT as *mut c_void,
+            size_of::<RECT>() as u32,
+        );
+        if result == 0 && rect_has_area(rect) {
+            return Some(rect);
+        }
+
+        if GetWindowRect(hwnd, &mut rect) == 0 || !rect_has_area(rect) {
+            return None;
+        }
+
+        Some(rect)
     }
 }
 
@@ -915,6 +1007,11 @@ fn rect_covers_monitor(
         && window_rect.top <= monitor_rect.top + FULLSCREEN_TOLERANCE_PX
         && window_rect.right >= monitor_rect.right - FULLSCREEN_TOLERANCE_PX
         && window_rect.bottom >= monitor_rect.bottom - FULLSCREEN_TOLERANCE_PX
+}
+
+#[cfg(target_os = "windows")]
+fn rect_has_area(rect: windows_sys::Win32::Foundation::RECT) -> bool {
+    rect.right > rect.left && rect.bottom > rect.top
 }
 
 #[cfg(target_os = "windows")]
@@ -1208,7 +1305,8 @@ fn lock_key_from_vk(vk_code: u32) -> Option<LockKey> {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::is_shell_desktop_class;
+    use super::{is_shell_desktop_class, rect_covers_monitor};
+    use windows_sys::Win32::Foundation::RECT;
 
     #[test]
     fn identifies_windows_desktop_shell_classes() {
@@ -1220,5 +1318,35 @@ mod tests {
     fn keeps_regular_fullscreen_windows_suppressible() {
         assert!(!is_shell_desktop_class("ApplicationFrameWindow"));
         assert!(!is_shell_desktop_class("Chrome_WidgetWin_1"));
+    }
+
+    #[test]
+    fn treats_monitor_sized_rect_as_fullscreen() {
+        let monitor = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+
+        assert!(rect_covers_monitor(monitor, monitor));
+    }
+
+    #[test]
+    fn treats_work_area_rect_as_not_fullscreen() {
+        let monitor = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
+        let work_area = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1040,
+        };
+
+        assert!(!rect_covers_monitor(work_area, monitor));
     }
 }
