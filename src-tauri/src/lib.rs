@@ -621,6 +621,42 @@ fn start_keyboard_listener(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn crop_to_content(icon: tauri::image::Image<'_>) -> tauri::image::Image<'static> {
+    let w = icon.width();
+    let h = icon.height();
+    let rgba = icon.rgba();
+
+    let (mut min_x, mut max_x) = (w, 0u32);
+    let (mut min_y, mut max_y) = (h, 0u32);
+    for y in 0..h {
+        for x in 0..w {
+            let idx = ((y * w + x) * 4) as usize;
+            if rgba[idx + 3] > 0 {
+                min_x = min_x.min(x);
+                max_x = max_x.max(x);
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if max_x <= min_x || max_y <= min_y {
+        return icon.to_owned();
+    }
+
+    let cw = max_x - min_x + 1;
+    let ch = max_y - min_y + 1;
+    let mut cropped = Vec::with_capacity((cw * ch * 4) as usize);
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let idx = ((y * w + x) * 4) as usize;
+            cropped.extend_from_slice(&rgba[idx..idx + 4]);
+        }
+    }
+
+    tauri::image::Image::new_owned(cropped, cw, ch)
+}
+
 fn install_tray(app: &mut App) -> tauri::Result<()> {
     let handle = app.handle();
     let language = detect_system_language();
@@ -649,7 +685,7 @@ fn install_tray(app: &mut App) -> tauri::Result<()> {
         });
 
     if let Some(icon) = app.default_window_icon().cloned() {
-        tray = tray.icon(icon);
+        tray = tray.icon(crop_to_content(icon));
     }
 
     app.manage(tray.build(handle)?);
