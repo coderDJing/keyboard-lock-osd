@@ -1,7 +1,7 @@
 {
   "name": "keyboard-lock-osd",
   "private": true,
-  "version": "0.1.6",
+  "version": "0.1.7",
   "packageManager": "pnpm@10.26.1",
   "type": "module",
   "scripts": {
