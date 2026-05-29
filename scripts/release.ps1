@@ -1,4 +1,4 @@
-# 版本发布脚本
+﻿# 版本发布脚本
 # 用法: .\scripts\release.ps1 <version>
 # 示例: .\scripts\release.ps1 0.1.7
 
