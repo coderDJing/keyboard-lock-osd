@@ -25,6 +25,8 @@ use windows_sys::Win32::System::Console::{
 
 const OSD_WIDTH: u32 = 360;
 const OSD_HEIGHT: u32 = 118;
+const OSD_HORIZONTAL_GAP: i32 = 48;
+const OSD_TOP_GAP: i32 = 48;
 const OSD_BOTTOM_GAP: i32 = 118;
 const OSD_LABEL_PREFIX: &str = "osd-";
 const AUTOSTART_ARG: &str = "--keyboard-lock-osd-autostart";
@@ -167,12 +169,43 @@ struct KeyEvent {
     kind: KeyEventKind,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OsdPosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    MiddleLeft,
+    MiddleCenter,
+    MiddleRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
+impl OsdPosition {
+    fn from_id(id: &str) -> Option<Self> {
+        match id {
+            "top-left" => Some(Self::TopLeft),
+            "top-center" => Some(Self::TopCenter),
+            "top-right" => Some(Self::TopRight),
+            "middle-left" => Some(Self::MiddleLeft),
+            "middle-center" => Some(Self::MiddleCenter),
+            "middle-right" => Some(Self::MiddleRight),
+            "bottom-left" => Some(Self::BottomLeft),
+            "bottom-center" => Some(Self::BottomCenter),
+            "bottom-right" => Some(Self::BottomRight),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct OsdPreferences {
     caps: bool,
     num: bool,
     scroll: bool,
     suppress_fullscreen: bool,
+    position: OsdPosition,
 }
 
 impl Default for OsdPreferences {
@@ -182,6 +215,7 @@ impl Default for OsdPreferences {
             num: true,
             scroll: true,
             suppress_fullscreen: true,
+            position: OsdPosition::BottomCenter,
         }
     }
 }
@@ -209,6 +243,14 @@ impl OsdPreferences {
 
     fn set_suppress_fullscreen(&mut self, enabled: bool) {
         self.suppress_fullscreen = enabled;
+    }
+
+    fn position(self) -> OsdPosition {
+        self.position
+    }
+
+    fn set_position(&mut self, position: OsdPosition) {
+        self.position = position;
     }
 }
 
@@ -342,6 +384,37 @@ fn set_suppress_fullscreen_osd(enabled: bool) {
 }
 
 #[tauri::command]
+fn set_osd_position(app: AppHandle, position: String) -> Result<(), String> {
+    let position = OsdPosition::from_id(&position)
+        .ok_or_else(|| format!("Unknown OSD position: {position}"))?;
+    write_osd_position(position);
+
+    for (_, window) in osd_windows(&app) {
+        if let Some(monitor) = window.current_monitor().ok().flatten() {
+            let _ = position_osd_on_monitor(&window, &monitor);
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+fn set_osd_theme_color(app: AppHandle, color: String) -> Result<(), String> {
+    if !is_valid_theme_color(&color) {
+        return Err(format!("Invalid theme color: {color}"));
+    }
+
+    app.emit("osd-theme-color", color)
+        .map_err(|error| error.to_string())
+}
+
+fn is_valid_theme_color(color: &str) -> bool {
+    color.len() == 7
+        && color.starts_with('#')
+        && color.bytes().skip(1).all(|byte| byte.is_ascii_hexdigit())
+}
+
+#[tauri::command]
 fn current_autostart_enabled(app: AppHandle) -> bool {
     if cfg!(debug_assertions) {
         return read_autostart_preference().unwrap_or(true);
@@ -450,6 +523,8 @@ pub fn run() {
             preview_osd,
             set_osd_enabled,
             set_suppress_fullscreen_osd,
+            set_osd_position,
+            set_osd_theme_color,
             current_autostart_enabled,
             set_autostart_enabled,
             current_language,
@@ -902,6 +977,23 @@ fn write_suppress_fullscreen_osd(enabled: bool) {
     }
 }
 
+fn read_osd_position() -> OsdPosition {
+    OSD_PREFERENCES
+        .get_or_init(|| Mutex::new(OsdPreferences::default()))
+        .lock()
+        .map(|preferences| preferences.position())
+        .unwrap_or(OsdPosition::BottomCenter)
+}
+
+fn write_osd_position(position: OsdPosition) {
+    if let Ok(mut preferences) = OSD_PREFERENCES
+        .get_or_init(|| Mutex::new(OsdPreferences::default()))
+        .lock()
+    {
+        preferences.set_position(position);
+    }
+}
+
 fn initialize_autostart(app: &AppHandle) {
     let enabled = read_autostart_preference().unwrap_or_else(|| {
         write_autostart_preference(true);
@@ -997,10 +1089,33 @@ fn position_osd_on_monitor(
     let scale_factor = monitor.scale_factor();
     let width = (OSD_WIDTH as f64 * scale_factor).round() as i32;
     let height = (OSD_HEIGHT as f64 * scale_factor).round() as i32;
+    let horizontal_gap = (OSD_HORIZONTAL_GAP as f64 * scale_factor).round() as i32;
+    let top_gap = (OSD_TOP_GAP as f64 * scale_factor).round() as i32;
     let bottom_gap = (OSD_BOTTOM_GAP as f64 * scale_factor).round() as i32;
+    let position = read_osd_position();
 
-    let x = work_area.position.x + ((work_area.size.width as i32 - width) / 2);
-    let y = work_area.position.y + work_area.size.height as i32 - height - bottom_gap;
+    let x = match position {
+        OsdPosition::TopLeft | OsdPosition::MiddleLeft | OsdPosition::BottomLeft => {
+            work_area.position.x + horizontal_gap
+        }
+        OsdPosition::TopCenter | OsdPosition::MiddleCenter | OsdPosition::BottomCenter => {
+            work_area.position.x + ((work_area.size.width as i32 - width) / 2)
+        }
+        OsdPosition::TopRight | OsdPosition::MiddleRight | OsdPosition::BottomRight => {
+            work_area.position.x + work_area.size.width as i32 - width - horizontal_gap
+        }
+    };
+    let y = match position {
+        OsdPosition::TopLeft | OsdPosition::TopCenter | OsdPosition::TopRight => {
+            work_area.position.y + top_gap
+        }
+        OsdPosition::MiddleLeft | OsdPosition::MiddleCenter | OsdPosition::MiddleRight => {
+            work_area.position.y + ((work_area.size.height as i32 - height) / 2)
+        }
+        OsdPosition::BottomLeft | OsdPosition::BottomCenter | OsdPosition::BottomRight => {
+            work_area.position.y + work_area.size.height as i32 - height - bottom_gap
+        }
+    };
 
     window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }))
 }

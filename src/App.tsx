@@ -6,6 +6,16 @@ import "./App.css";
 
 type LockKeyId = "caps" | "num" | "scroll";
 type Language = "en" | "zh";
+type OsdPositionId =
+  | "top-left"
+  | "top-center"
+  | "top-right"
+  | "middle-left"
+  | "middle-center"
+  | "middle-right"
+  | "bottom-left"
+  | "bottom-center"
+  | "bottom-right";
 
 type LockChangePayload = {
   key: LockKeyId;
@@ -70,6 +80,42 @@ const defaultOsdEnabled: OsdEnabledMap = {
 
 const osdEnabledStorageKey = "keyboard-lock-osd.enabledKeys";
 const suppressFullscreenStorageKey = "keyboard-lock-osd.suppressFullscreen";
+const osdPositionStorageKey = "keyboard-lock-osd.position";
+const themeColorStorageKey = "keyboard-lock-osd.themeColor";
+const defaultOsdPosition: OsdPositionId = "bottom-center";
+const defaultThemeColor = "#1f9d63";
+const themeColorPresets = [
+  "#1f9d63",
+  "#0ea5e9",
+  "#6366f1",
+  "#a855f7",
+  "#ec4899",
+  "#f97316",
+  "#eab308",
+  "#ef4444",
+];
+const osdPositions: OsdPositionId[] = [
+  "top-left",
+  "top-center",
+  "top-right",
+  "middle-left",
+  "middle-center",
+  "middle-right",
+  "bottom-left",
+  "bottom-center",
+  "bottom-right",
+];
+const osdPositionLayout: OsdPositionId[] = [
+  "top-left",
+  "top-center",
+  "top-right",
+  "middle-left",
+  "middle-center",
+  "middle-right",
+  "bottom-left",
+  "bottom-center",
+  "bottom-right",
+];
 
 const copy = {
   en: {
@@ -84,9 +130,21 @@ const copy = {
     startup: "Startup",
     startAtLogin: "Start at login",
     position: "Position",
-    bottomCenter: "Bottom center",
-    animation: "Animation",
-    fade: "Fade",
+    selectPosition: "Choose OSD position",
+    positions: {
+      "top-left": "Top left",
+      "top-center": "Top center",
+      "top-right": "Top right",
+      "middle-left": "Left center",
+      "middle-center": "Center",
+      "middle-right": "Right center",
+      "bottom-left": "Bottom left",
+      "bottom-center": "Bottom center",
+      "bottom-right": "Bottom right",
+    },
+    themeColor: "Theme color",
+    selectThemeColor: "Choose theme color",
+    customColor: "Custom color",
     hideInFullscreen: "Hide OSD in fullscreen",
   },
   zh: {
@@ -101,9 +159,21 @@ const copy = {
     startup: "开机启动",
     startAtLogin: "开机自启",
     position: "位置",
-    bottomCenter: "屏幕中下方",
-    animation: "动画",
-    fade: "淡入淡出",
+    selectPosition: "选择浮层位置",
+    positions: {
+      "top-left": "左上角",
+      "top-center": "顶部居中",
+      "top-right": "右上角",
+      "middle-left": "左侧居中",
+      "middle-center": "屏幕中央",
+      "middle-right": "右侧居中",
+      "bottom-left": "左下角",
+      "bottom-center": "底部居中",
+      "bottom-right": "右下角",
+    },
+    themeColor: "主题颜色",
+    selectThemeColor: "选择主题颜色",
+    customColor: "自定义颜色",
     hideInFullscreen: "全屏时不显示浮层",
   },
 };
@@ -124,6 +194,8 @@ function OsdView() {
   const hideTimer = useRef<number | undefined>(undefined);
 
   useEffect(() => {
+    applyThemeColor(readStoredThemeColor());
+
     const showNotice = (nextNotice: OsdNotice, duration = 1_150) => {
       window.clearTimeout(hideTimer.current);
       setNotice(nextNotice);
@@ -150,12 +222,17 @@ function OsdView() {
           showNotice({ kind: "toast", payload: event.payload }, 2_400);
         },
       );
+      const unlistenThemeColor = await listen<string>(
+        "osd-theme-color",
+        (event) => applyThemeColor(event.payload),
+      );
 
       void invoke("osd_ready").catch(() => {});
 
       return () => {
         unlistenLock();
         unlistenToast();
+        unlistenThemeColor();
       };
     };
 
@@ -212,6 +289,14 @@ function SettingsView() {
   const [osdEnabled, setOsdEnabled] = useState<OsdEnabledMap>(() =>
     readStoredOsdEnabled(),
   );
+  const [osdPosition, setOsdPosition] = useState<OsdPositionId>(() =>
+    readStoredOsdPosition(),
+  );
+  const [themeColor, setThemeColor] = useState(() => readStoredThemeColor());
+  const [positionPickerOpen, setPositionPickerOpen] = useState(false);
+  const [themePickerOpen, setThemePickerOpen] = useState(false);
+  const positionPickerRef = useRef<HTMLDivElement>(null);
+  const themePickerRef = useRef<HTMLDivElement>(null);
   const text = copy[language];
 
   useEffect(() => {
@@ -269,6 +354,47 @@ function SettingsView() {
       enabled: suppressFullscreenOsd,
     });
   }, [suppressFullscreenOsd]);
+
+  useEffect(() => {
+    window.localStorage.setItem(osdPositionStorageKey, osdPosition);
+    void invoke("set_osd_position", { position: osdPosition });
+  }, [osdPosition]);
+
+  useEffect(() => {
+    window.localStorage.setItem(themeColorStorageKey, themeColor);
+    applyThemeColor(themeColor);
+    void invoke("set_osd_theme_color", { color: themeColor });
+  }, [themeColor]);
+
+  useEffect(() => {
+    if (!positionPickerOpen && !themePickerOpen) {
+      return;
+    }
+
+    const closePicker = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (
+        !positionPickerRef.current?.contains(target) &&
+        !themePickerRef.current?.contains(target)
+      ) {
+        setPositionPickerOpen(false);
+        setThemePickerOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setPositionPickerOpen(false);
+        setThemePickerOpen(false);
+      }
+    };
+
+    document.addEventListener("pointerdown", closePicker);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closePicker);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [positionPickerOpen, themePickerOpen]);
 
   const enabledCount = useMemo(
     () => states.filter((state) => state.enabled).length,
@@ -337,13 +463,108 @@ function SettingsView() {
             {enabledCount}/{states.length}
           </strong>
         </div>
-        <div>
+        <div className="position-setting" ref={positionPickerRef}>
           <span>{text.position}</span>
-          <strong>{text.bottomCenter}</strong>
+          <button
+            aria-expanded={positionPickerOpen}
+            aria-haspopup="listbox"
+            className="position-trigger"
+            type="button"
+            onClick={() => {
+              setPositionPickerOpen((current) => !current);
+              setThemePickerOpen(false);
+            }}
+          >
+            <span className={`position-preview ${osdPosition}`} aria-hidden="true">
+              <i />
+            </span>
+            <strong>{text.positions[osdPosition]}</strong>
+            <span className="position-chevron" aria-hidden="true" />
+          </button>
+          {positionPickerOpen && (
+            <div
+              aria-label={text.selectPosition}
+              className="position-picker"
+              role="listbox"
+            >
+              <span className="position-picker-title">{text.selectPosition}</span>
+              <div className="position-picker-grid">
+                {osdPositionLayout.map((position) => (
+                  <button
+                    aria-label={text.positions[position]}
+                    aria-selected={position === osdPosition}
+                    className={`position-option ${
+                      position === osdPosition ? "selected" : ""
+                    }`}
+                    key={position}
+                    role="option"
+                    title={text.positions[position]}
+                    type="button"
+                    onClick={() => {
+                      setOsdPosition(position);
+                      setPositionPickerOpen(false);
+                    }}
+                  >
+                    <i aria-hidden="true" />
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
-        <div>
-          <span>{text.animation}</span>
-          <strong>{text.fade}</strong>
+        <div className="theme-setting" ref={themePickerRef}>
+          <span>{text.themeColor}</span>
+          <button
+            aria-expanded={themePickerOpen}
+            aria-haspopup="dialog"
+            className="theme-trigger"
+            type="button"
+            onClick={() => {
+              setThemePickerOpen((current) => !current);
+              setPositionPickerOpen(false);
+            }}
+          >
+            <span
+              aria-hidden="true"
+              className="theme-swatch"
+              style={{ backgroundColor: themeColor }}
+            />
+            <strong>{themeColor.toUpperCase()}</strong>
+            <span className="theme-chevron" aria-hidden="true" />
+          </button>
+          {themePickerOpen && (
+            <div
+              aria-label={text.selectThemeColor}
+              className="theme-picker"
+              role="dialog"
+            >
+              <span className="theme-picker-title">{text.selectThemeColor}</span>
+              <div className="theme-preset-grid">
+                {themeColorPresets.map((color) => (
+                  <button
+                    aria-label={color}
+                    aria-pressed={color === themeColor}
+                    className={`theme-preset ${
+                      color === themeColor ? "selected" : ""
+                    }`}
+                    key={color}
+                    style={{ backgroundColor: color }}
+                    type="button"
+                    onClick={() => setThemeColor(color)}
+                  />
+                ))}
+              </div>
+              <label className="theme-custom-color">
+                <span>{text.customColor}</span>
+                <input
+                  aria-label={text.customColor}
+                  type="color"
+                  value={themeColor}
+                  onChange={(event) => setThemeColor(event.currentTarget.value)}
+                />
+              </label>
+            </div>
+          )}
         </div>
       </section>
 
@@ -420,6 +641,26 @@ function readStoredOsdEnabled(): OsdEnabledMap {
 
 function persistOsdEnabled(settings: OsdEnabledMap) {
   window.localStorage.setItem(osdEnabledStorageKey, JSON.stringify(settings));
+}
+
+function readStoredOsdPosition(): OsdPositionId {
+  const value = window.localStorage.getItem(osdPositionStorageKey);
+  return osdPositions.includes(value as OsdPositionId)
+    ? (value as OsdPositionId)
+    : defaultOsdPosition;
+}
+
+function readStoredThemeColor() {
+  const value = window.localStorage.getItem(themeColorStorageKey);
+  return isThemeColor(value) ? value : defaultThemeColor;
+}
+
+function applyThemeColor(color: string) {
+  document.documentElement.style.setProperty("--accent-color", color);
+}
+
+function isThemeColor(value: string | null): value is string {
+  return /^#[\da-f]{6}$/i.test(value ?? "");
 }
 
 function readStoredBoolean(key: string, fallback: boolean) {
