@@ -21,8 +21,8 @@ Keyboard Lock OSD is a lightweight Windows utility that shows a compact on-scree
 ## Features
 
 - Instant feedback for Caps Lock, Num Lock, and Scroll Lock state changes.
-- Compact bottom-center OSD overlay designed to stay out of the way.
-- Multi-monitor friendly: each connected display gets its own bottom-center OSD, with display changes synced automatically.
+- Compact OSD overlay with nine screen positions and a customizable accent color.
+- Multi-monitor friendly: each connected display gets its own OSD, with display changes synced automatically.
 - Per-key controls for choosing which lock keys should show an overlay.
 - Settings window with current key states and built-in overlay preview.
 - Tray-first startup with optional start at login.
@@ -35,7 +35,7 @@ Keyboard Lock OSD is a lightweight Windows utility that shows a compact on-scree
 1. Launch the app. It starts minimized to the system tray.
 2. Press Caps Lock, Num Lock, or Scroll Lock to see the state overlay.
 3. Click the tray icon to open settings.
-4. Adjust start at login, fullscreen suppression, and per-key overlay visibility.
+4. Adjust start at login, fullscreen suppression, OSD position, accent color, and per-key overlay visibility.
 
 ## Who It Is For
 

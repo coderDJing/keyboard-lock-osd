@@ -1,5 +1,6 @@
 use serde::Serialize;
 use std::{
+    collections::HashSet,
     env, fs,
     path::PathBuf,
     sync::{
@@ -30,6 +31,12 @@ const OSD_TOP_GAP: i32 = 48;
 const OSD_BOTTOM_GAP: i32 = 118;
 const OSD_LABEL_PREFIX: &str = "osd-";
 const AUTOSTART_ARG: &str = "--keyboard-lock-osd-autostart";
+const AUTOSTART_VALUE_NAME: &str = "Keyboard Lock OSD";
+#[cfg(target_os = "windows")]
+const AUTOSTART_RUN_KEY: &str = "Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+#[cfg(target_os = "windows")]
+const AUTOSTART_APPROVED_KEY: &str =
+    "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StartupApproved\\Run";
 const AUTOSTART_PREFERENCE_FILE: &str = "autostart-enabled.txt";
 const PROJECT_REPOSITORY_URL: &str = "https://github.com/coderDJing/keyboard-lock-osd";
 
@@ -45,7 +52,16 @@ struct LaunchContext {
 }
 
 struct StartupTrayToastState {
-    shown: Mutex<bool>,
+    pending_windows: Mutex<HashSet<String>>,
+}
+
+impl StartupTrayToastState {
+    fn capture_initial_windows(&self, app: &AppHandle) {
+        let Ok(mut pending) = self.pending_windows.lock() else {
+            return;
+        };
+        pending.extend(osd_windows(app).into_iter().map(|(label, _)| label));
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -416,10 +432,6 @@ fn is_valid_theme_color(color: &str) -> bool {
 
 #[tauri::command]
 fn current_autostart_enabled(app: AppHandle) -> bool {
-    if cfg!(debug_assertions) {
-        return read_autostart_preference().unwrap_or(true);
-    }
-
     app.autolaunch()
         .is_enabled()
         .unwrap_or_else(|_| read_autostart_preference().unwrap_or(true))
@@ -427,8 +439,18 @@ fn current_autostart_enabled(app: AppHandle) -> bool {
 
 #[tauri::command]
 fn set_autostart_enabled(app: AppHandle, enabled: bool) -> Result<bool, String> {
+    // debug 构建不接管系统自启项（避免把 target\debug 的 exe 写进注册表），
+    // 也不再谎报偏好文件里的状态，直接返回真实系统状态。
+    if cfg!(debug_assertions) {
+        return Ok(current_autostart_enabled(app));
+    }
+
+    let previous = read_autostart_preference();
+    if let Err(error) = apply_autostart_preference(&app, enabled) {
+        restore_autostart_preference(previous);
+        return Err(error);
+    }
     write_autostart_preference(enabled);
-    apply_autostart_preference(&app, enabled)?;
     Ok(current_autostart_enabled(app))
 }
 
@@ -449,17 +471,31 @@ fn current_launch_source(context: State<'_, LaunchContext>) -> LaunchSourcePaylo
 
 #[tauri::command]
 fn osd_ready(
-    app: AppHandle,
+    window: tauri::WebviewWindow,
     context: State<'_, LaunchContext>,
     toast_state: State<'_, StartupTrayToastState>,
-) {
+) -> Option<StartupToastPayload> {
     if !matches!(context.source, LaunchSource::Manual)
-        || !mark_startup_tray_toast_shown(&toast_state)
+        || !consume_startup_tray_toast(&toast_state, window.label())
     {
-        return;
+        return None;
     }
 
-    show_startup_tray_toast(&app);
+    if let Some(monitor) = window.current_monitor().ok().flatten() {
+        let fullscreen_monitor_pos = if read_suppress_fullscreen_osd() {
+            fullscreen_monitor_position()
+        } else {
+            None
+        };
+        if fullscreen_monitor_pos.is_some() && is_monitor_at_pos(&monitor, fullscreen_monitor_pos) {
+            let _ = window.hide();
+            return None;
+        }
+        let _ = position_osd_on_monitor(&window, &monitor);
+    }
+
+    reveal_osd_window(&window);
+    Some(startup_tray_toast_payload(detect_system_language()))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -474,7 +510,7 @@ pub fn run() {
         }))
         .plugin(
             tauri_plugin_autostart::Builder::new()
-                .app_name("Keyboard Lock OSD")
+                .app_name(AUTOSTART_VALUE_NAME)
                 .arg(AUTOSTART_ARG)
                 .build(),
         )
@@ -493,7 +529,7 @@ pub fn run() {
                 source: launch_source,
             });
             app.manage(StartupTrayToastState {
-                shown: Mutex::new(false),
+                pending_windows: Mutex::new(HashSet::new()),
             });
 
             let _ = APP_HANDLE.set(app.handle().clone());
@@ -506,6 +542,9 @@ pub fn run() {
 
             // Create OSD windows for each monitor on the main thread
             create_osd_windows_for_monitors(app.handle());
+            // 只允许启动时已存在的 OSD 窗口领取启动提示，避免后来热插拔的窗口重复弹出
+            app.state::<StartupTrayToastState>()
+                .capture_initial_windows(app.handle());
 
             install_tray(app)?;
             install_console_shutdown_handler(app.handle().clone());
@@ -640,44 +679,12 @@ fn spawn_manual_update_check(app: AppHandle) {
     });
 }
 
-fn mark_startup_tray_toast_shown(state: &StartupTrayToastState) -> bool {
-    let Ok(mut shown) = state.shown.lock() else {
+fn consume_startup_tray_toast(state: &StartupTrayToastState, label: &str) -> bool {
+    let Ok(mut pending) = state.pending_windows.lock() else {
         return false;
     };
 
-    if *shown {
-        return false;
-    }
-
-    *shown = true;
-    true
-}
-
-fn show_startup_tray_toast(app: &AppHandle) {
-    let language = detect_system_language();
-    let payload = startup_tray_toast_payload(language);
-    let fullscreen_monitor_pos = if read_suppress_fullscreen_osd() {
-        fullscreen_monitor_position()
-    } else {
-        None
-    };
-    let js = toast_eval_script(&payload);
-
-    for (_, window) in osd_windows(app) {
-        if let Some(monitor) = window.current_monitor().ok().flatten() {
-            if fullscreen_monitor_pos.is_some() && is_monitor_at_pos(&monitor, fullscreen_monitor_pos) {
-                let _ = window.hide();
-                continue;
-            }
-            let _ = position_osd_on_monitor(&window, &monitor);
-            reveal_osd_window(&window);
-            let w = window.clone();
-            let js_clone = js.clone();
-            let _ = app.run_on_main_thread(move || {
-                let _ = w.eval(&js_clone);
-            });
-        }
-    }
+    pending.remove(label)
 }
 
 fn startup_tray_toast_payload(language: UiLanguage) -> StartupToastPayload {
@@ -899,13 +906,6 @@ fn osd_eval_script(kind: &str, payload: &LockChangePayload) -> String {
     )
 }
 
-fn toast_eval_script(payload: &StartupToastPayload) -> String {
-    let json = serde_json::to_string(payload).unwrap_or_default();
-    format!(
-        "window.__KEYBOARD_LOCK_OSD_SHOW && window.__KEYBOARD_LOCK_OSD_SHOW({{kind:\"toast\",payload:{json}}})"
-    )
-}
-
 fn show_dynamic_toast(app: &AppHandle, title: &str, message: &str) {
     let payload = ToastPayload {
         title: title.to_string(),
@@ -995,18 +995,41 @@ fn write_osd_position(position: OsdPosition) {
 }
 
 fn initialize_autostart(app: &AppHandle) {
-    let enabled = read_autostart_preference().unwrap_or_else(|| {
-        write_autostart_preference(true);
-        true
-    });
+    let enabled = match read_autostart_preference() {
+        Some(value) => value,
+        None => {
+            write_autostart_preference(true);
+            true
+        }
+    };
 
-    if let Err(error) = apply_autostart_preference(app, enabled) {
+    let result = if enabled {
+        // 只在注册表项缺失或命令过期时补写，不重置 StartupApproved，
+        // 保留任务管理器里的手动禁用状态（用户直接删除 Run 值时仍会按偏好补回）。
+        reconcile_autostart_entry(app)
+    } else if autostart_entry_present() {
+        apply_autostart_preference(app, false)
+    } else {
+        Ok(())
+    };
+
+    if let Err(error) = result {
         eprintln!("failed to apply autostart preference: {error}");
     }
 }
 
 fn apply_autostart_preference(app: &AppHandle, enabled: bool) -> Result<(), String> {
     if cfg!(debug_assertions) {
+        return Ok(());
+    }
+
+    #[cfg(target_os = "windows")]
+    if enabled {
+        // auto-launch 0.5 写入的路径不带引号，这里自己写入带引号的命令，
+        // 避免含空格路径的 unquoted path 隐患。
+        let command = autostart_command_line()?;
+        set_autostart_registry_command(&command)?;
+        mark_autostart_approved();
         return Ok(());
     }
 
@@ -1017,6 +1040,147 @@ fn apply_autostart_preference(app: &AppHandle, enabled: bool) -> Result<(), Stri
         manager.disable()
     }
     .map_err(|error| error.to_string())
+}
+
+fn restore_autostart_preference(previous: Option<bool>) {
+    match previous {
+        Some(value) => write_autostart_preference(value),
+        None => {
+            let _ = fs::remove_file(autostart_preference_path());
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn reconcile_autostart_entry(app: &AppHandle) -> Result<(), String> {
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
+
+    let desired = autostart_command_line()?;
+    match autostart_registry_command() {
+        None => apply_autostart_preference(app, true),
+        Some(current) if current != desired => set_autostart_registry_command(&desired),
+        Some(_) => Ok(()),
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn reconcile_autostart_entry(app: &AppHandle) -> Result<(), String> {
+    apply_autostart_preference(app, true)
+}
+
+#[cfg(target_os = "windows")]
+fn autostart_entry_present() -> bool {
+    autostart_registry_command().is_some()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn autostart_entry_present() -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn autostart_command_line() -> Result<String, String> {
+    let exe = env::current_exe().map_err(|error| error.to_string())?;
+    Ok(format!("\"{}\" {AUTOSTART_ARG}", exe.display()))
+}
+
+#[cfg(target_os = "windows")]
+fn autostart_registry_command() -> Option<String> {
+    use std::{ffi::c_void, ptr::null_mut};
+    use windows_sys::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_SZ};
+
+    let mut buffer = [0u16; 1024];
+    let mut size = (buffer.len() * std::mem::size_of::<u16>()) as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            wide_null(AUTOSTART_RUN_KEY).as_ptr(),
+            wide_null(AUTOSTART_VALUE_NAME).as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buffer.as_mut_ptr() as *mut c_void,
+            &mut size,
+        )
+    };
+    if status != 0 {
+        return None;
+    }
+
+    let len = (size as usize / std::mem::size_of::<u16>())
+        .saturating_sub(1)
+        .min(buffer.len());
+    Some(String::from_utf16_lossy(&buffer[..len]))
+}
+
+#[cfg(target_os = "windows")]
+fn set_autostart_registry_command(command: &str) -> Result<(), String> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ,
+    };
+
+    let value = wide_null(command);
+    unsafe {
+        let mut key: HKEY = null_mut();
+        let status = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_null(AUTOSTART_RUN_KEY).as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        );
+        if status != 0 {
+            return Err(format!("failed to open autostart registry key: {status}"));
+        }
+        let status = RegSetValueExW(
+            key,
+            wide_null(AUTOSTART_VALUE_NAME).as_ptr(),
+            0,
+            REG_SZ,
+            value.as_ptr() as *const u8,
+            (value.len() * std::mem::size_of::<u16>()) as u32,
+        );
+        let _ = RegCloseKey(key);
+        if status != 0 {
+            return Err(format!("failed to write autostart registry value: {status}"));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn mark_autostart_approved() {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
+        REG_BINARY,
+    };
+
+    const ENABLED: [u8; 12] = [0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    unsafe {
+        let mut key: HKEY = null_mut();
+        let status = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_null(AUTOSTART_APPROVED_KEY).as_ptr(),
+            0,
+            KEY_SET_VALUE,
+            &mut key,
+        );
+        if status != 0 {
+            return;
+        }
+        let _ = RegSetValueExW(
+            key,
+            wide_null(AUTOSTART_VALUE_NAME).as_ptr(),
+            0,
+            REG_BINARY,
+            ENABLED.as_ptr(),
+            ENABLED.len() as u32,
+        );
+        let _ = RegCloseKey(key);
+    }
 }
 
 fn read_autostart_preference() -> Option<bool> {
@@ -1656,8 +1820,28 @@ fn lock_key_from_vk(vk_code: u32) -> Option<LockKey> {
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
-    use super::{is_shell_desktop_class, rect_covers_monitor};
+    use super::{
+        consume_startup_tray_toast, is_shell_desktop_class, rect_covers_monitor,
+        StartupTrayToastState,
+    };
+    use std::sync::Mutex;
     use windows_sys::Win32::Foundation::RECT;
+
+    #[test]
+    fn consumes_startup_toast_only_for_initial_windows() {
+        let state = StartupTrayToastState {
+            pending_windows: Mutex::new(
+                ["osd-0".to_string(), "osd-1".to_string()]
+                    .into_iter()
+                    .collect(),
+            ),
+        };
+
+        assert!(consume_startup_tray_toast(&state, "osd-0"));
+        assert!(!consume_startup_tray_toast(&state, "osd-0"));
+        assert!(consume_startup_tray_toast(&state, "osd-1"));
+        assert!(!consume_startup_tray_toast(&state, "osd-9"));
+    }
 
     #[test]
     fn identifies_windows_desktop_shell_classes() {

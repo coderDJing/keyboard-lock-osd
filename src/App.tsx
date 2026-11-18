@@ -216,22 +216,20 @@ function OsdView() {
           showNotice({ kind: "lock", payload: event.payload });
         },
       );
-      const unlistenToast = await listen<StartupToastPayload>(
-        "startup-tray-toast",
-        (event) => {
-          showNotice({ kind: "toast", payload: event.payload }, 2_400);
-        },
-      );
       const unlistenThemeColor = await listen<string>(
         "osd-theme-color",
         (event) => applyThemeColor(event.payload),
       );
 
-      void invoke("osd_ready").catch(() => {});
+      const startupToast = await invoke<StartupToastPayload | null>(
+        "osd_ready",
+      ).catch(() => null);
+      if (startupToast) {
+        showNotice({ kind: "toast", payload: startupToast }, 2_400);
+      }
 
       return () => {
         unlistenLock();
-        unlistenToast();
         unlistenThemeColor();
       };
     };
