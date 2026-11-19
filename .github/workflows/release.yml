@@ -44,7 +44,7 @@ jobs:
         with:
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
           releaseName: "Keyboard Lock OSD v__VERSION__"
-          releaseBody: "Windows installer and signed updater metadata."
+          releaseBody: "修复已知问题"
           releaseDraft: false
           prerelease: false
           updaterJsonPreferNsis: true
