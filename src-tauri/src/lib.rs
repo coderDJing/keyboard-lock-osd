@@ -405,9 +405,9 @@ fn set_osd_position(app: AppHandle, position: String) -> Result<(), String> {
         .ok_or_else(|| format!("Unknown OSD position: {position}"))?;
     write_osd_position(position);
 
-    for (_, window) in osd_windows(&app) {
-        if let Some(monitor) = window.current_monitor().ok().flatten() {
-            let _ = position_osd_on_monitor(&window, &monitor);
+    for (index, monitor) in sorted_monitors(&app).iter().enumerate() {
+        if let Some(window) = app.get_webview_window(&osd_label(index)) {
+            let _ = position_osd_on_monitor(&window, monitor);
         }
     }
 
@@ -481,13 +481,13 @@ fn osd_ready(
         return None;
     }
 
-    if let Some(monitor) = window.current_monitor().ok().flatten() {
+    if let Some(monitor) = assigned_monitor(&window) {
         let fullscreen_monitor_pos = if read_suppress_fullscreen_osd() {
             fullscreen_monitor_position()
         } else {
             None
         };
-        if fullscreen_monitor_pos.is_some() && is_monitor_at_pos(&monitor, fullscreen_monitor_pos) {
+        if is_monitor_at_pos(&monitor, fullscreen_monitor_pos) {
             let _ = window.hide();
             return None;
         }
@@ -541,7 +541,7 @@ pub fn run() {
             }
 
             // Create OSD windows for each monitor on the main thread
-            create_osd_windows_for_monitors(app.handle());
+            reconcile_osd_windows(app.handle());
             // 只允许启动时已存在的 OSD 窗口领取启动提示，避免后来热插拔的窗口重复弹出
             app.state::<StartupTrayToastState>()
                 .capture_initial_windows(app.handle());
@@ -871,21 +871,24 @@ fn show_osd(app: &AppHandle, key: LockKey, enabled: bool) {
         None
     };
     let js = osd_eval_script("lock", &payload);
+    let monitors = sorted_monitors(app);
+    ensure_osd_windows(app, monitors.len());
 
-    for (_, window) in osd_windows(app) {
-        if let Some(monitor) = window.current_monitor().ok().flatten() {
-            if fullscreen_monitor_pos.is_some() && is_monitor_at_pos(&monitor, fullscreen_monitor_pos) {
-                let _ = window.hide();
-                continue;
-            }
-            let _ = position_osd_on_monitor(&window, &monitor);
-            reveal_osd_window(&window);
-            let w = window.clone();
-            let js_clone = js.clone();
-            let _ = app.run_on_main_thread(move || {
-                let _ = w.eval(&js_clone);
-            });
+    for (index, monitor) in monitors.iter().enumerate() {
+        let Some(window) = app.get_webview_window(&osd_label(index)) else {
+            continue;
+        };
+        if is_monitor_at_pos(monitor, fullscreen_monitor_pos) {
+            let _ = window.hide();
+            continue;
         }
+        let _ = position_osd_on_monitor(&window, monitor);
+        reveal_osd_window(&window);
+        let w = window.clone();
+        let js_clone = js.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = w.eval(&js_clone);
+        });
     }
 }
 
@@ -920,21 +923,24 @@ fn show_dynamic_toast(app: &AppHandle, title: &str, message: &str) {
     } else {
         None
     };
+    let monitors = sorted_monitors(app);
+    ensure_osd_windows(app, monitors.len());
 
-    for (_, window) in osd_windows(app) {
-        if let Some(monitor) = window.current_monitor().ok().flatten() {
-            if fullscreen_monitor_pos.is_some() && is_monitor_at_pos(&monitor, fullscreen_monitor_pos) {
-                let _ = window.hide();
-                continue;
-            }
-            let _ = position_osd_on_monitor(&window, &monitor);
-            reveal_osd_window(&window);
-            let w = window.clone();
-            let js_clone = js.clone();
-            let _ = app.run_on_main_thread(move || {
-                let _ = w.eval(&js_clone);
-            });
+    for (index, monitor) in monitors.iter().enumerate() {
+        let Some(window) = app.get_webview_window(&osd_label(index)) else {
+            continue;
+        };
+        if is_monitor_at_pos(monitor, fullscreen_monitor_pos) {
+            let _ = window.hide();
+            continue;
         }
+        let _ = position_osd_on_monitor(&window, monitor);
+        reveal_osd_window(&window);
+        let w = window.clone();
+        let js_clone = js.clone();
+        let _ = app.run_on_main_thread(move || {
+            let _ = w.eval(&js_clone);
+        });
     }
 }
 
@@ -1285,37 +1291,79 @@ fn position_osd_on_monitor(
 }
 
 
+fn osd_label(index: usize) -> String {
+    format!("{OSD_LABEL_PREFIX}{index}")
+}
+
+fn osd_label_index(label: &str) -> Option<usize> {
+    label.strip_prefix(OSD_LABEL_PREFIX)?.parse().ok()
+}
+
 fn osd_windows(app: &AppHandle) -> Vec<(String, tauri::WebviewWindow)> {
     app.webview_windows()
         .into_iter()
-        .filter(|(label, _)| {
-            label.starts_with(OSD_LABEL_PREFIX)
-                && label[OSD_LABEL_PREFIX.len()..]
-                    .chars()
-                    .all(|c| c.is_ascii_digit())
-        })
+        .filter(|(label, _)| osd_label_index(label).is_some())
         .collect()
 }
 
-
-fn create_osd_windows_for_monitors(app: &AppHandle) {
+// 按屏幕位置排序并去重：镜像/复制模式下 Windows 会把多块物理屏报成同一个矩形，
+// 把它们当成多块屏会导致窗口叠在同一块屏上、另一块屏没有窗口。
+fn sorted_monitors(app: &AppHandle) -> Vec<tauri::Monitor> {
     let Some(any_window) = app.get_webview_window("settings") else {
-        eprintln!("create_osd_windows_for_monitors: no settings window");
-        return;
+        return Vec::new();
     };
 
-    let monitors = match any_window.available_monitors() {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("create_osd_windows_for_monitors: failed to get monitors: {e}");
-            return;
-        }
+    let Ok(mut monitors) = any_window.available_monitors() else {
+        return Vec::new();
     };
+
+    monitors.sort_by_key(|monitor| {
+        let position = monitor.position();
+        let size = monitor.size();
+        (position.x, position.y, size.width, size.height)
+    });
+    monitors.dedup_by(|a, b| a.position() == b.position() && a.size() == b.size());
+    monitors
+}
+
+fn assigned_monitor(window: &tauri::WebviewWindow) -> Option<tauri::Monitor> {
+    let index = osd_label_index(window.label())?;
+    sorted_monitors(window.app_handle()).get(index).cloned()
+}
+
+fn ensure_osd_windows(app: &AppHandle, monitor_count: usize) {
+    if osd_windows(app).len() == monitor_count {
+        return;
+    }
+
+    let app_for_main = app.clone();
+    let _ = app.run_on_main_thread(move || reconcile_osd_windows(&app_for_main));
+}
+
+// OSD 窗口与“排序后的显示器下标”一一绑定：缺的补建、多的销毁，并把每个窗口
+// 强制重新定位到它负责的显示器。只在数量变化时增删窗口会让热插拔后的窗口
+// 漂到相邻屏，出现一块屏叠两个窗口、另一块屏永远没有窗口的情况。
+fn reconcile_osd_windows(app: &AppHandle) {
+    let monitors = sorted_monitors(app);
+    if monitors.is_empty() {
+        eprintln!("reconcile_osd_windows: no monitors available");
+        return;
+    }
 
     for (index, monitor) in monitors.iter().enumerate() {
-        let label = format!("{OSD_LABEL_PREFIX}{index}");
-        if let Some(window) = create_osd_window(app, &label) {
+        let label = osd_label(index);
+        let window = app
+            .get_webview_window(&label)
+            .or_else(|| create_osd_window(app, &label));
+        if let Some(window) = window {
             let _ = position_osd_on_monitor(&window, monitor);
+        }
+    }
+
+    for (label, window) in osd_windows(app) {
+        let keep = osd_label_index(&label).is_some_and(|index| index < monitors.len());
+        if !keep {
+            let _ = window.destroy();
         }
     }
 }
@@ -1337,8 +1385,14 @@ fn create_osd_window(app: &AppHandle, label: &str) -> Option<tauri::WebviewWindo
     .visible(true)
     .inner_size(OSD_WIDTH as f64, OSD_HEIGHT as f64)
     .resizable(false)
-    .build()
-    .ok()?;
+    .build();
+    let window = match window {
+        Ok(window) => window,
+        Err(error) => {
+            eprintln!("failed to create OSD window {label}: {error}");
+            return None;
+        }
+    };
 
     if let Err(error) = window.set_ignore_cursor_events(true) {
         eprintln!("failed to enable OSD cursor passthrough for {label}: {error}");
@@ -1349,37 +1403,6 @@ fn create_osd_window(app: &AppHandle, label: &str) -> Option<tauri::WebviewWindo
     }
 
     Some(window)
-}
-
-fn sync_osd_windows(app: &AppHandle) {
-    let Some(any_window) = app.get_webview_window("settings") else {
-        return;
-    };
-
-    let monitors = match any_window.available_monitors() {
-        Ok(m) => m,
-        Err(_) => return,
-    };
-
-    for (index, monitor) in monitors.iter().enumerate() {
-        let label = format!("{OSD_LABEL_PREFIX}{index}");
-        if app.get_webview_window(&label).is_none() {
-            if let Some(window) = create_osd_window(app, &label) {
-                let _ = position_osd_on_monitor(&window, monitor);
-            }
-        }
-    }
-
-    let max_index = monitors.len();
-    for (label, window) in osd_windows(app) {
-        if let Some(index_str) = label.strip_prefix(OSD_LABEL_PREFIX) {
-            if let Ok(index) = index_str.parse::<usize>() {
-                if index >= max_index {
-                    let _ = window.destroy();
-                }
-            }
-        }
-    }
 }
 
 fn fullscreen_monitor_position() -> Option<tauri::PhysicalPosition<i32>> {
@@ -1683,7 +1706,7 @@ unsafe fn windows_raw_input_loop() {
             if let Some(app) = APP_HANDLE.get() {
                 let app_clone = app.clone();
                 let _ = app.run_on_main_thread(move || {
-                    sync_osd_windows(&app_clone);
+                    reconcile_osd_windows(&app_clone);
                 });
             }
         }
